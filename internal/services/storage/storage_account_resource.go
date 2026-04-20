@@ -35,6 +35,7 @@ import (
 	"github.com/hashicorp/terraform-provider-azurerm/internal/services/network"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/services/storage/helpers"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/services/storage/migration"
+	"github.com/hashicorp/terraform-provider-azurerm/internal/services/storage/tableserviceproperties"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/services/storage/validate"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/tf/pluginsdk"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/tf/validation"
@@ -1138,6 +1139,15 @@ func resourceStorageAccount() *pluginsdk.Resource {
 						return errors.New("cannot configure 'queue_properties' when the Provider Feature 'data_plane_available' is set to 'false'")
 					}
 
+					rawTableProperties, diags := d.GetRawConfigAt(sdk.ConstructCtyPath("table_properties"))
+					if diags.HasError() {
+						return nil
+					}
+
+					if !rawTableProperties.IsNull() && rawTableProperties.IsKnown() && rawTableProperties.LengthInt() > 0 {
+						return errors.New("cannot configure 'table_properties' when the Provider Feature 'data_plane_available' is set to 'false'")
+					}
+
 					rawStaticWebsiteProperties, diags := d.GetRawConfigAt(sdk.ConstructCtyPath("static_website"))
 					if diags.HasError() {
 						return nil
@@ -1365,6 +1375,18 @@ func resourceStorageAccount() *pluginsdk.Resource {
 				},
 			},
 			Deprecated: "this block has been deprecated and superseded by the `azurerm_storage_account_queue_properties` resource and will be removed in v5.0 of the AzureRM provider",
+		}
+
+		resource.Schema["table_properties"] = &pluginsdk.Schema{
+			Type:     pluginsdk.TypeList,
+			Optional: true,
+			Computed: true,
+			MaxItems: 1,
+			Elem: &pluginsdk.Resource{
+				Schema: map[string]*pluginsdk.Schema{
+					"cors_rule": helpers.SchemaStorageAccountCorsRule(false),
+				},
+			},
 		}
 
 		resource.Schema["allow_nested_items_to_be_public"] = &pluginsdk.Schema{
@@ -1609,6 +1631,32 @@ func resourceStorageAccountCreate(d *pluginsdk.ResourceData, meta interface{}) e
 
 			if err = d.Set("queue_properties", val); err != nil {
 				return fmt.Errorf("setting `queue_properties`: %+v", err)
+			}
+		}
+
+		if val, ok := d.GetOk("table_properties"); ok {
+			if !supportLevel.supportTable {
+				return fmt.Errorf("`table_properties` aren't supported for account kind %q in sku tier %q", accountKind, accountTier)
+			}
+
+			tableClient, err := dataPlaneClient.TablesDataPlaneClient(ctx, *dataPlaneAccount, dataPlaneClient.DataPlaneOperationSupportingAnyAuthMethod())
+			if err != nil {
+				return fmt.Errorf("building Tables Client: %s", err)
+			}
+
+			existingTableProperties, err := tableClient.GetServiceProperties(ctx)
+			if err != nil {
+				return fmt.Errorf("retrieving Table Properties: %+v", err)
+			}
+
+			tableProperties := expandAccountTableProperties(val.([]interface{}), existingTableProperties)
+
+			if err = tableClient.UpdateServiceProperties(ctx, *tableProperties); err != nil {
+				return fmt.Errorf("updating Table Properties: %+v", err)
+			}
+
+			if err = d.Set("table_properties", val); err != nil {
+				return fmt.Errorf("setting `table_properties`: %+v", err)
 			}
 		}
 
@@ -2034,6 +2082,36 @@ func resourceStorageAccountUpdate(d *pluginsdk.ResourceData, meta interface{}) e
 			}
 		}
 
+		if d.HasChange("table_properties") {
+			if !supportLevel.supportTable {
+				return fmt.Errorf("`table_properties` aren't supported for account kind %q in sku tier %q", accountKind, accountTier)
+			}
+
+			account, err := dataPlaneClient.GetAccount(ctx, *id)
+			if err != nil {
+				return fmt.Errorf("retrieving %s: %+v", *id, err)
+			}
+			if account == nil {
+				return fmt.Errorf("unable to locate %s", *id)
+			}
+
+			tableClient, err := dataPlaneClient.TablesDataPlaneClient(ctx, *account, dataPlaneClient.DataPlaneOperationSupportingAnyAuthMethod())
+			if err != nil {
+				return fmt.Errorf("building Tables Client: %s", err)
+			}
+
+			existingTableProperties, err := tableClient.GetServiceProperties(ctx)
+			if err != nil {
+				return fmt.Errorf("retrieving Table Properties for %s: %+v", *id, err)
+			}
+
+			tableProperties := expandAccountTableProperties(d.Get("table_properties").([]interface{}), existingTableProperties)
+
+			if err = tableClient.UpdateServiceProperties(ctx, *tableProperties); err != nil {
+				return fmt.Errorf("updating Table Properties for %s: %+v", *id, err)
+			}
+		}
+
 		if d.HasChange("static_website") {
 			if !supportLevel.supportStaticWebsite {
 				return fmt.Errorf("`static_website` aren't supported for account kind %q in sku tier %q", accountKind, accountTier)
@@ -2378,6 +2456,26 @@ func resourceStorageAccountFlatten(ctx context.Context, d *pluginsdk.ResourceDat
 		}
 		if err := d.Set("queue_properties", queueProperties); err != nil {
 			return fmt.Errorf("setting `queue_properties`: %+v", err)
+		}
+
+		tableProperties := make([]interface{}, 0)
+		if supportLevel.supportTable {
+			tableClient, err := dataPlaneClient.TablesDataPlaneClient(ctx, *details, dataPlaneClient.DataPlaneOperationSupportingAnyAuthMethod())
+			if err != nil {
+				return fmt.Errorf("building Tables Client: %s", err)
+			}
+
+			tableProps, err := tableClient.GetServiceProperties(ctx)
+			if err != nil {
+				if !connectionError(err) {
+					return fmt.Errorf("retrieving table properties for %s: %+v", id, err)
+				}
+			}
+
+			tableProperties = flattenAccountTableProperties(tableProps)
+		}
+		if err := d.Set("table_properties", tableProperties); err != nil {
+			return fmt.Errorf("setting `table_properties`: %+v", err)
 		}
 
 		staticWebsiteProperties := make([]interface{}, 0)
@@ -3561,6 +3659,82 @@ func flattenAccountQueuePropertiesCorsRule(input string) []interface{} {
 	}
 
 	return results
+}
+
+func expandAccountTableProperties(input []interface{}, existing *tableserviceproperties.StorageServiceProperties) *tableserviceproperties.StorageServiceProperties {
+	properties := existing
+	if properties == nil {
+		properties = &tableserviceproperties.StorageServiceProperties{}
+	}
+
+	if len(input) == 0 {
+		properties.Cors = &tableserviceproperties.Cors{}
+		return properties
+	}
+
+	attrs := input[0].(map[string]interface{})
+	properties.Cors = expandAccountTablePropertiesCors(attrs["cors_rule"].([]interface{}))
+
+	return properties
+}
+
+func flattenAccountTableProperties(input *tableserviceproperties.StorageServiceProperties) []interface{} {
+	output := make([]interface{}, 0)
+
+	if input != nil {
+		corsRules := flattenAccountTablePropertiesCors(input.Cors)
+		if len(corsRules) > 0 {
+			output = append(output, map[string]interface{}{
+				"cors_rule": corsRules,
+			})
+		}
+	}
+
+	return output
+}
+
+func expandAccountTablePropertiesCors(input []interface{}) *tableserviceproperties.Cors {
+	if len(input) == 0 {
+		return &tableserviceproperties.Cors{}
+	}
+
+	corsRules := make([]tableserviceproperties.CorsRule, 0)
+	for _, attr := range input {
+		corsRuleAttr := attr.(map[string]interface{})
+		corsRule := tableserviceproperties.CorsRule{}
+
+		corsRule.AllowedOrigins = strings.Join(*utils.ExpandStringSlice(corsRuleAttr["allowed_origins"].([]interface{})), ",")
+		corsRule.ExposedHeaders = strings.Join(*utils.ExpandStringSlice(corsRuleAttr["exposed_headers"].([]interface{})), ",")
+		corsRule.AllowedHeaders = strings.Join(*utils.ExpandStringSlice(corsRuleAttr["allowed_headers"].([]interface{})), ",")
+		corsRule.AllowedMethods = strings.Join(*utils.ExpandStringSlice(corsRuleAttr["allowed_methods"].([]interface{})), ",")
+		corsRule.MaxAgeInSeconds = corsRuleAttr["max_age_in_seconds"].(int)
+
+		corsRules = append(corsRules, corsRule)
+	}
+
+	return &tableserviceproperties.Cors{
+		CorsRule: corsRules,
+	}
+}
+
+func flattenAccountTablePropertiesCors(input *tableserviceproperties.Cors) []interface{} {
+	output := make([]interface{}, 0)
+
+	if input == nil || len(input.CorsRule) == 0 || input.CorsRule[0].AllowedOrigins == "" {
+		return output
+	}
+
+	for _, item := range input.CorsRule {
+		output = append(output, map[string]interface{}{
+			"allowed_headers":    flattenAccountQueuePropertiesCorsRule(item.AllowedHeaders),
+			"allowed_methods":    flattenAccountQueuePropertiesCorsRule(item.AllowedMethods),
+			"allowed_origins":    flattenAccountQueuePropertiesCorsRule(item.AllowedOrigins),
+			"exposed_headers":    flattenAccountQueuePropertiesCorsRule(item.ExposedHeaders),
+			"max_age_in_seconds": item.MaxAgeInSeconds,
+		})
+	}
+
+	return output
 }
 
 func expandAccountStaticWebsiteProperties(input []interface{}) accounts.StorageServiceProperties {

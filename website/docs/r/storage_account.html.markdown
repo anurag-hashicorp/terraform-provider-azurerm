@@ -144,6 +144,10 @@ The following arguments are supported:
 
 ~> **Note:** `queue_properties` can only be configured when `account_tier` is set to `Standard` and `account_kind` is set to either `Storage` or `StorageV2`.
 
+* `table_properties` - (Optional) A `table_properties` block as defined below.
+
+~> **Note:** `table_properties` can only be configured when `account_tier` is set to `Standard` and `account_kind` is set to either `Storage` or `StorageV2`.
+
 * `static_website` - (Optional) A `static_website` block as defined below.
 
 ~> **Note:** `static_website` can only be set when the `account_kind` is set to `StorageV2` or `BlockBlobStorage`.
@@ -418,6 +422,12 @@ A `queue_properties` block supports the following:
 * `minute_metrics` - (Optional) A `minute_metrics` block as defined below.
 
 * `hour_metrics` - (Optional) A `hour_metrics` block as defined below.
+
+---
+
+A `table_properties` block supports the following:
+
+* `cors_rule` - (Optional) A `cors_rule` block as defined above.
 
 ---
 

@@ -799,6 +799,43 @@ func TestAccStorageAccount_queueProperties(t *testing.T) {
 	})
 }
 
+func TestAccStorageAccount_tableProperties(t *testing.T) {
+	if features.FivePointOh() {
+		t.Skip("test not valid in 5.0")
+	}
+
+	data := acceptance.BuildTestData(t, "azurerm_storage_account", "test")
+	r := StorageAccountResource{}
+
+	data.ResourceTest(t, r, []acceptance.TestStep{
+		{
+			Config: r.tableProperties(data),
+			Check: acceptance.ComposeTestCheckFunc(
+				check.That(data.ResourceName).ExistsInAzure(r),
+				check.That(data.ResourceName).Key("table_properties.0.cors_rule.#").HasValue("1"),
+				check.That(data.ResourceName).Key("table_properties.0.cors_rule.0.allowed_methods.#").HasValue("2"),
+			),
+		},
+		data.ImportStep(),
+		{
+			Config: r.tablePropertiesUpdated(data),
+			Check: acceptance.ComposeTestCheckFunc(
+				check.That(data.ResourceName).ExistsInAzure(r),
+				check.That(data.ResourceName).Key("table_properties.0.cors_rule.#").HasValue("2"),
+			),
+		},
+		data.ImportStep(),
+		{
+			Config: r.basic(data),
+			Check: acceptance.ComposeTestCheckFunc(
+				check.That(data.ResourceName).ExistsInAzure(r),
+				check.That(data.ResourceName).Key("table_properties.#").HasValue("0"),
+			),
+		},
+		data.ImportStep(),
+	})
+}
+
 func TestAccStorageAccount_staticWebsiteEnabled(t *testing.T) {
 	if features.FivePointOh() {
 		t.Skip("test not valid in 5.0")
@@ -2001,6 +2038,22 @@ func TestAccStorageAccount_noDataPlaneQueueShouldError(t *testing.T) {
 		{
 			Config:      r.noDataPlaneExpectQueueError(data),
 			ExpectError: regexp.MustCompile("cannot configure 'queue_properties' when the Provider Feature 'data_plane_available' is set to 'false'"),
+		},
+	})
+}
+
+func TestAccStorageAccount_noDataPlaneTableShouldError(t *testing.T) {
+	if features.FivePointOh() {
+		t.Skip("test not valid in 5.0")
+	}
+
+	data := acceptance.BuildTestData(t, "azurerm_storage_account", "test")
+	r := StorageAccountResource{}
+
+	data.ResourceTest(t, r, []acceptance.TestStep{
+		{
+			Config:      r.noDataPlaneExpectTableError(data),
+			ExpectError: regexp.MustCompile("cannot configure 'table_properties' when the Provider Feature 'data_plane_available' is set to 'false'"),
 		},
 	})
 }
@@ -3352,6 +3405,78 @@ resource "azurerm_storage_account" "test" {
       enabled               = true
       include_apis          = false
       retention_policy_days = 7
+    }
+  }
+}
+`, data.RandomInteger, data.Locations.Primary, data.RandomString)
+}
+
+func (r StorageAccountResource) tableProperties(data acceptance.TestData) string {
+	return fmt.Sprintf(`
+provider "azurerm" {
+  features {}
+}
+
+resource "azurerm_resource_group" "test" {
+  name     = "acctestRG-storage-%d"
+  location = "%s"
+}
+
+resource "azurerm_storage_account" "test" {
+  name                = "unlikely23exst2acct%s"
+  resource_group_name = azurerm_resource_group.test.name
+
+  location                 = azurerm_resource_group.test.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+
+  table_properties {
+    cors_rule {
+      allowed_origins    = ["http://www.example.com"]
+      exposed_headers    = ["x-tempo-*"]
+      allowed_headers    = ["x-tempo-*"]
+      allowed_methods    = ["GET", "MERGE"]
+      max_age_in_seconds = "500"
+    }
+  }
+}
+`, data.RandomInteger, data.Locations.Primary, data.RandomString)
+}
+
+func (r StorageAccountResource) tablePropertiesUpdated(data acceptance.TestData) string {
+	return fmt.Sprintf(`
+provider "azurerm" {
+  features {}
+}
+
+resource "azurerm_resource_group" "test" {
+  name     = "acctestRG-storage-%d"
+  location = "%s"
+}
+
+resource "azurerm_storage_account" "test" {
+  name                = "unlikely23exst2acct%s"
+  resource_group_name = azurerm_resource_group.test.name
+
+  location                 = azurerm_resource_group.test.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+
+  table_properties {
+    cors_rule {
+      allowed_origins    = ["http://www.example.com"]
+      exposed_headers    = ["x-tempo-*", "x-method-*"]
+      allowed_headers    = ["*"]
+      allowed_methods    = ["GET"]
+      max_age_in_seconds = "2000000000"
+    }
+
+    cors_rule {
+      allowed_origins    = ["http://www.test.com"]
+      exposed_headers    = ["x-another-*"]
+      allowed_headers    = ["*"]
+      allowed_methods    = ["PUT"]
+      max_age_in_seconds = "1000"
     }
   }
 }
@@ -5609,6 +5734,46 @@ resource "azurerm_storage_account" "test" {
       read                  = true
       write                 = true
       retention_policy_days = 7
+    }
+  }
+
+  tags = {
+    environment = "production"
+  }
+}
+`, data.RandomInteger, data.Locations.Primary, data.RandomString)
+}
+
+func (r StorageAccountResource) noDataPlaneExpectTableError(data acceptance.TestData) string {
+	return fmt.Sprintf(`
+provider "azurerm" {
+  features {
+    storage {
+      data_plane_available = false
+    }
+  }
+}
+
+resource "azurerm_resource_group" "test" {
+  name     = "acctestRG-storage-%d"
+  location = "%s"
+}
+
+resource "azurerm_storage_account" "test" {
+  name                = "unlikely23exst2acct%s"
+  resource_group_name = azurerm_resource_group.test.name
+
+  location                 = azurerm_resource_group.test.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+
+  table_properties {
+    cors_rule {
+      allowed_origins    = ["http://www.example.com"]
+      exposed_headers    = ["x-tempo-*"]
+      allowed_headers    = ["x-tempo-*"]
+      allowed_methods    = ["GET", "MERGE"]
+      max_age_in_seconds = "500"
     }
   }
 

@@ -10,6 +10,7 @@ import (
 	"github.com/hashicorp/go-azure-sdk/sdk/auth"
 	"github.com/hashicorp/go-azure-sdk/sdk/client"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/services/storage/shim"
+	"github.com/hashicorp/terraform-provider-azurerm/internal/services/storage/tableserviceproperties"
 	"github.com/jackofallops/giovanni/storage/2023-11-03/blob/accounts"
 	"github.com/jackofallops/giovanni/storage/2023-11-03/blob/blobs"
 	"github.com/jackofallops/giovanni/storage/2023-11-03/blob/containers"
@@ -308,10 +309,20 @@ func (c Client) TablesDataPlaneClient(ctx context.Context, account AccountDetail
 		return nil, fmt.Errorf("building %s client: %+v", clientName, err)
 	}
 
+	servicePropertiesClient, err := tableserviceproperties.NewWithBaseUri(*baseUri)
+	if err != nil {
+		return nil, fmt.Errorf("building Table Storage Service Properties client: %+v", err)
+	}
+
 	err = c.configureDataPlane(ctx, clientName, *baseUri, apiClient.Client, account, operation)
 	if err != nil {
 		return nil, err
 	}
 
-	return shim.NewDataPlaneStorageTableWrapper(apiClient), nil
+	err = c.configureDataPlane(ctx, "Table Storage Service Properties", *baseUri, servicePropertiesClient.Client, account, operation)
+	if err != nil {
+		return nil, err
+	}
+
+	return shim.NewDataPlaneStorageTableWrapper(apiClient, servicePropertiesClient), nil
 }

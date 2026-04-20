@@ -20,6 +20,7 @@ import (
 
 type storageAccountServiceSupportLevel struct {
 	supportBlob          bool
+	supportTable         bool
 	supportQueue         bool
 	supportShare         bool
 	supportStaticWebsite bool
@@ -36,6 +37,13 @@ func availableFunctionalityForAccount(kind storageaccounts.Kind, tier storageacc
 			// GZRS and RAGZRS is invalid, while ZRS is valid but has no queue endpoint.
 			slices.Contains([]string{"LRS", "GRS", "RAGRS"}, replicationType)))
 
+	// Table is only supported for Storage and StorageV2, in Standard sku tier.
+	supportTable := tier == storageaccounts.SkuTierStandard && (kind == storageaccounts.KindStorageVTwo ||
+		(kind == storageaccounts.KindStorage &&
+			// Per local test, only LRS/GRS/RAGRS Storage V1 accounts support table endpoint.
+			// GZRS and RAGZRS is invalid, while ZRS is valid but has no table endpoint.
+			slices.Contains([]string{"LRS", "GRS", "RAGRS"}, replicationType)))
+
 	// File share is only supported for StorageV2 and FileStorage.
 	// See: https://docs.microsoft.com/en-us/azure/storage/files/storage-files-planning#management-concepts
 	// Per test, the StorageV2 with Premium sku tier also doesn't support file share.
@@ -50,6 +58,7 @@ func availableFunctionalityForAccount(kind storageaccounts.Kind, tier storageacc
 
 	return storageAccountServiceSupportLevel{
 		supportBlob:          supportBlob,
+		supportTable:         supportTable,
 		supportQueue:         supportQueue,
 		supportShare:         supportShare,
 		supportStaticWebsite: supportStaticWebSite,
@@ -83,6 +92,20 @@ func waitForDataPlaneToBecomeAvailableForAccount(ctx context.Context, client *cl
 		if err = poller.PollUntilDone(ctx); err != nil {
 			if !connectionError(err) {
 				return fmt.Errorf("waiting for the Queues Service to become available: %+v", err)
+			}
+		}
+	}
+
+	if supportLevel.supportTable {
+		log.Printf("[DEBUG] waiting for the Table Service to become available")
+		pollerType, err := custompollers.NewDataPlaneTableAvailabilityPoller(ctx, client, account)
+		if err != nil {
+			return fmt.Errorf("building Table Poller: %+v", err)
+		}
+		poller := pollers.NewPoller(pollerType, initialDelayDuration, pollers.DefaultNumberOfDroppedConnectionsToAllow)
+		if err = poller.PollUntilDone(ctx); err != nil {
+			if !connectionError(err) {
+				return fmt.Errorf("waiting for the Table Service to become available: %+v", err)
 			}
 		}
 	}

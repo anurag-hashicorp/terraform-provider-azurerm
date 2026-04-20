@@ -8,16 +8,20 @@ import (
 
 	"github.com/hashicorp/go-azure-helpers/lang/pointer"
 	"github.com/hashicorp/go-azure-helpers/lang/response"
+	"github.com/hashicorp/go-azure-sdk/sdk/client/pollers"
+	"github.com/hashicorp/terraform-provider-azurerm/internal/services/storage/tableserviceproperties"
 	"github.com/jackofallops/giovanni/storage/2023-11-03/table/tables"
 )
 
 type DataPlaneStorageTableWrapper struct {
-	client *tables.Client
+	client                  *tables.Client
+	servicePropertiesClient *tableserviceproperties.Client
 }
 
-func NewDataPlaneStorageTableWrapper(client *tables.Client) StorageTableWrapper {
+func NewDataPlaneStorageTableWrapper(client *tables.Client, servicePropertiesClient *tableserviceproperties.Client) StorageTableWrapper {
 	return DataPlaneStorageTableWrapper{
-		client: client,
+		client:                  client,
+		servicePropertiesClient: servicePropertiesClient,
 	}
 }
 
@@ -51,7 +55,32 @@ func (w DataPlaneStorageTableWrapper) GetACLs(ctx context.Context, tableName str
 	return &acls.SignedIdentifiers, nil
 }
 
+func (w DataPlaneStorageTableWrapper) GetServiceProperties(ctx context.Context) (*tableserviceproperties.StorageServiceProperties, error) {
+	serviceProps, err := w.servicePropertiesClient.GetServiceProperties(ctx)
+	if err != nil {
+		if serviceProps.HttpResponse == nil {
+			return nil, pollers.PollingDroppedConnectionError{
+				Message: err.Error(),
+			}
+		}
+		if response.WasNotFound(serviceProps.HttpResponse) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return &serviceProps.StorageServiceProperties, nil
+}
+
 func (w DataPlaneStorageTableWrapper) UpdateACLs(ctx context.Context, tableName string, acls []tables.SignedIdentifier) error {
 	_, err := w.client.SetACL(ctx, tableName, acls)
+	return err
+}
+
+func (w DataPlaneStorageTableWrapper) UpdateServiceProperties(ctx context.Context, properties tableserviceproperties.StorageServiceProperties) error {
+	input := tableserviceproperties.SetStorageServicePropertiesInput{
+		Properties: properties,
+	}
+	_, err := w.servicePropertiesClient.SetServiceProperties(ctx, input)
 	return err
 }
