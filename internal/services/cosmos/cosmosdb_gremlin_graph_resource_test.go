@@ -160,6 +160,54 @@ func TestAccCosmosDbGremlinGraph_autoscale(t *testing.T) {
 	})
 }
 
+func TestAccCosmosDbGremlinGraph_switchManualToAutoscale(t *testing.T) {
+	data := acceptance.BuildTestData(t, "azurerm_cosmosdb_gremlin_graph", "test")
+	r := CosmosGremlinGraphResource{}
+
+	data.ResourceTest(t, r, []acceptance.TestStep{
+		{
+			Config: r.throughput(data, 1000),
+			Check: acceptance.ComposeAggregateTestCheckFunc(
+				check.That(data.ResourceName).ExistsInAzure(r),
+				check.That(data.ResourceName).Key("throughput").HasValue("1000"),
+			),
+		},
+		data.ImportStep(),
+		{
+			Config: r.autoscale(data, 4000),
+			Check: acceptance.ComposeAggregateTestCheckFunc(
+				check.That(data.ResourceName).ExistsInAzure(r),
+				check.That(data.ResourceName).Key("autoscale_settings.0.max_throughput").HasValue("4000"),
+			),
+		},
+		data.ImportStep(),
+	})
+}
+
+func TestAccCosmosDbGremlinGraph_switchAutoscaleToManual(t *testing.T) {
+	data := acceptance.BuildTestData(t, "azurerm_cosmosdb_gremlin_graph", "test")
+	r := CosmosGremlinGraphResource{}
+
+	data.ResourceTest(t, r, []acceptance.TestStep{
+		{
+			Config: r.autoscale(data, 4000),
+			Check: acceptance.ComposeAggregateTestCheckFunc(
+				check.That(data.ResourceName).ExistsInAzure(r),
+				check.That(data.ResourceName).Key("autoscale_settings.0.max_throughput").HasValue("4000"),
+			),
+		},
+		data.ImportStep(),
+		{
+			Config: r.throughput(data, 1000),
+			Check: acceptance.ComposeAggregateTestCheckFunc(
+				check.That(data.ResourceName).ExistsInAzure(r),
+				check.That(data.ResourceName).Key("throughput").HasValue("1000"),
+			),
+		},
+		data.ImportStep(),
+	})
+}
+
 func TestAccCosmosDbGremlinGraph_partition_key_version(t *testing.T) {
 	data := acceptance.BuildTestData(t, "azurerm_cosmosdb_gremlin_graph", "test")
 	r := CosmosGremlinGraphResource{}
@@ -435,6 +483,31 @@ resource "azurerm_cosmosdb_gremlin_graph" "test" {
   }
 }
 `, CosmosGremlinDatabaseResource{}.basic(data), data.RandomInteger, throughput, defaultTTL)
+}
+
+// matches `autoscale` exactly apart from the throughput block - `unique_key` is ForceNew, so
+// reusing `update` here would recreate the graph instead of migrating its throughput
+func (CosmosGremlinGraphResource) throughput(data acceptance.TestData, throughput int) string {
+	return fmt.Sprintf(`
+%[1]s
+
+resource "azurerm_cosmosdb_gremlin_graph" "test" {
+  name                = "acctest-CGRPC-%[2]d"
+  resource_group_name = azurerm_cosmosdb_account.test.resource_group_name
+  account_name        = azurerm_cosmosdb_account.test.name
+  database_name       = azurerm_cosmosdb_gremlin_database.test.name
+  partition_key_path  = "/test"
+
+  throughput = %[3]d
+
+  index_policy {
+    automatic      = true
+    indexing_mode  = "consistent"
+    included_paths = ["/*"]
+    excluded_paths = ["/\"_etag\"/?"]
+  }
+}
+`, CosmosGremlinDatabaseResource{}.basic(data), data.RandomInteger, throughput)
 }
 
 func (CosmosGremlinGraphResource) autoscale(data acceptance.TestData, maxThroughput int) string {
