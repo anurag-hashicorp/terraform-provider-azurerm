@@ -143,6 +143,78 @@ func TestAccCosmosDbSqlContainer_autoscale(t *testing.T) {
 	})
 }
 
+func TestAccCosmosDbSqlContainer_switchManualToAutoscale(t *testing.T) {
+	data := acceptance.BuildTestData(t, "azurerm_cosmosdb_sql_container", "test")
+	r := CosmosSqlContainerResource{}
+
+	data.ResourceTest(t, r, []acceptance.TestStep{
+		{
+			Config: r.throughput(data, 1000),
+			Check: acceptance.ComposeAggregateTestCheckFunc(
+				check.That(data.ResourceName).ExistsInAzure(r),
+				check.That(data.ResourceName).Key("throughput").HasValue("1000"),
+			),
+		},
+		data.ImportStep(),
+		{
+			Config: r.autoscale(data, 4000),
+			Check: acceptance.ComposeAggregateTestCheckFunc(
+				check.That(data.ResourceName).ExistsInAzure(r),
+				check.That(data.ResourceName).Key("autoscale_settings.0.max_throughput").HasValue("4000"),
+			),
+		},
+		data.ImportStep(),
+	})
+}
+
+func TestAccCosmosDbSqlContainer_switchAutoscaleToManual(t *testing.T) {
+	data := acceptance.BuildTestData(t, "azurerm_cosmosdb_sql_container", "test")
+	r := CosmosSqlContainerResource{}
+
+	data.ResourceTest(t, r, []acceptance.TestStep{
+		{
+			Config: r.autoscale(data, 4000),
+			Check: acceptance.ComposeAggregateTestCheckFunc(
+				check.That(data.ResourceName).ExistsInAzure(r),
+				check.That(data.ResourceName).Key("autoscale_settings.0.max_throughput").HasValue("4000"),
+			),
+		},
+		data.ImportStep(),
+		{
+			Config: r.throughput(data, 1000),
+			Check: acceptance.ComposeAggregateTestCheckFunc(
+				check.That(data.ResourceName).ExistsInAzure(r),
+				check.That(data.ResourceName).Key("throughput").HasValue("1000"),
+			),
+		},
+		data.ImportStep(),
+	})
+}
+
+func TestAccCosmosDbSqlContainer_sharedDatabaseThroughput(t *testing.T) {
+	data := acceptance.BuildTestData(t, "azurerm_cosmosdb_sql_container", "test")
+	r := CosmosSqlContainerResource{}
+
+	data.ResourceTest(t, r, []acceptance.TestStep{
+		{
+			Config: r.sharedDatabaseThroughput(data, 500),
+			Check: acceptance.ComposeAggregateTestCheckFunc(
+				check.That(data.ResourceName).ExistsInAzure(r),
+				check.That(data.ResourceName).Key("default_ttl").HasValue("500"),
+			),
+		},
+		data.ImportStep(),
+		{
+			Config: r.sharedDatabaseThroughput(data, 1000),
+			Check: acceptance.ComposeAggregateTestCheckFunc(
+				check.That(data.ResourceName).ExistsInAzure(r),
+				check.That(data.ResourceName).Key("default_ttl").HasValue("1000"),
+			),
+		},
+		data.ImportStep(),
+	})
+}
+
 func TestAccCosmosDbSqlContainer_indexing_policy(t *testing.T) {
 	data := acceptance.BuildTestData(t, "azurerm_cosmosdb_sql_container", "test")
 	r := CosmosSqlContainerResource{}
@@ -411,6 +483,36 @@ resource "azurerm_cosmosdb_sql_container" "test" {
   }
 }
 `, CosmosSqlDatabaseResource{}.basic(data), data.RandomInteger)
+}
+
+func (CosmosSqlContainerResource) throughput(data acceptance.TestData, throughput int) string {
+	return fmt.Sprintf(`
+%[1]s
+resource "azurerm_cosmosdb_sql_container" "test" {
+  name                = "acctest-CSQLC-%[2]d"
+  resource_group_name = azurerm_cosmosdb_account.test.resource_group_name
+  account_name        = azurerm_cosmosdb_account.test.name
+  database_name       = azurerm_cosmosdb_sql_database.test.name
+  partition_key_paths = ["/definition/id"]
+  throughput          = %[3]d
+}
+`, CosmosSqlDatabaseResource{}.basic(data), data.RandomInteger, throughput)
+}
+
+// the database holds the throughput offer and the container has none of its own, so the
+// container's throughput API returns 404
+func (CosmosSqlContainerResource) sharedDatabaseThroughput(data acceptance.TestData, defaultTTL int) string {
+	return fmt.Sprintf(`
+%[1]s
+resource "azurerm_cosmosdb_sql_container" "test" {
+  name                = "acctest-CSQLC-%[2]d"
+  resource_group_name = azurerm_cosmosdb_account.test.resource_group_name
+  account_name        = azurerm_cosmosdb_account.test.name
+  database_name       = azurerm_cosmosdb_sql_database.test.name
+  partition_key_paths = ["/definition/id"]
+  default_ttl         = %[3]d
+}
+`, CosmosSqlDatabaseResource{}.throughput(data, 400), data.RandomInteger, defaultTTL)
 }
 
 func (CosmosSqlContainerResource) autoscale(data acceptance.TestData, maxThroughput int) string {
