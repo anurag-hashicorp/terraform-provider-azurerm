@@ -278,10 +278,6 @@ func resourceCosmosDbGremlinGraphUpdate(d *pluginsdk.ResourceData, meta interfac
 		return err
 	}
 
-	if err = common.CheckForChangeFromAutoscaleAndManualThroughput(d); err != nil {
-		return fmt.Errorf("checking `autoscale_settings` and `throughput` for %s: %w", id, err)
-	}
-
 	partitionkeypaths := d.Get("partition_key_path").(string)
 
 	db := cosmosdb.GremlinGraphCreateUpdateParameters{
@@ -324,7 +320,45 @@ func resourceCosmosDbGremlinGraphUpdate(d *pluginsdk.ResourceData, meta interfac
 	}
 
 	if common.HasThroughputChange(d) {
+		throughputResp, err := client.GremlinResourcesGetGremlinGraphThroughput(ctx, *id)
+		if err != nil && !response.WasNotFound(throughputResp.HttpResponse) {
+			return fmt.Errorf("retrieving Throughput for %s: %+v", id, err)
+		}
+
+		desiredMode := common.DesiredThroughputMode(d)
+		currentMode := common.CurrentThroughputMode(pointer.From(throughputResp.Model))
+		migrated := false
+
+		if common.ThroughputMigrationRequired(currentMode, desiredMode) {
+			switch desiredMode {
+			case common.ThroughputModeAutoscale:
+				if err := client.GremlinResourcesMigrateGremlinGraphToAutoscaleThenPoll(ctx, *id); err != nil {
+					return fmt.Errorf("migrating %s to autoscale throughput: %+v", id, err)
+				}
+			case common.ThroughputModeManual:
+				if err := client.GremlinResourcesMigrateGremlinGraphToManualThroughputThenPoll(ctx, *id); err != nil {
+					return fmt.Errorf("migrating %s to manual throughput: %+v", id, err)
+				}
+			}
+			migrated = true
+
+			// the migration APIs accept no request body and assign a system-determined value, so the
+			// result has to be read back to determine whether the configured value still needs applying
+			throughputResp, err = client.GremlinResourcesGetGremlinGraphThroughput(ctx, *id)
+			if err != nil {
+				return fmt.Errorf("retrieving Throughput for %s: %+v", id, err)
+			}
+
+			if common.ThroughputValueMatchesConfig(d, pointer.From(throughputResp.Model)) {
+				return resourceCosmosDbGremlinGraphRead(d, meta)
+			}
+		}
+
 		if err := client.GremlinResourcesUpdateGremlinGraphThroughputThenPoll(ctx, *id, common.ExpandCosmosDBThroughputSettingsUpdateParameters(d)); err != nil {
+			if migrated {
+				return fmt.Errorf("setting Throughput for %s after migrating it to %s throughput: %+v", id, desiredMode, err)
+			}
+
 			return fmt.Errorf("setting Throughput for %s: %+v - If the graph has not been created with an initial throughput, you cannot configure it later", id, err)
 		}
 	}
@@ -418,7 +452,7 @@ func resourceCosmosDbGremlinGraphRead(d *pluginsdk.ResourceData, meta interface{
 				d.Set("autoscale_settings", nil)
 			}
 		} else {
-			common.SetResourceDataThroughputFromResponse(*throughputResp.Model, d)
+			common.SetResourceDataThroughputFromResponse(pointer.From(throughputResp.Model), d)
 		}
 	}
 	return nil
