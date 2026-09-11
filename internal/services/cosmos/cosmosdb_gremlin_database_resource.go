@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hashicorp/go-azure-helpers/lang/pointer"
 	"github.com/hashicorp/go-azure-helpers/lang/response"
 	"github.com/hashicorp/go-azure-helpers/resourcemanager/commonschema"
 	"github.com/hashicorp/go-azure-sdk/resource-manager/cosmosdb/2024-08-15/cosmosdb"
@@ -131,26 +132,53 @@ func resourceCosmosGremlinDatabaseUpdate(d *pluginsdk.ResourceData, meta interfa
 		return err
 	}
 
-	if err = common.CheckForChangeFromAutoscaleAndManualThroughput(d); err != nil {
-		return fmt.Errorf("checking `autoscale_settings` and `throughput` for %s: %w", id, err)
-	}
-
-	db := cosmosdb.GremlinDatabaseCreateUpdateParameters{
-		Properties: cosmosdb.GremlinDatabaseCreateUpdateProperties{
-			Resource: cosmosdb.GremlinDatabaseResource{
-				Id: id.GremlinDatabaseName,
-			},
-			Options: &cosmosdb.CreateUpdateOptions{},
-		},
-	}
-
-	if err = client.GremlinResourcesCreateUpdateGremlinDatabaseThenPoll(ctx, *id, db); err != nil {
-		return fmt.Errorf("updating %q: %+v", id, err)
+	// only the throughput offer is updatable, so this serves purely as an existence check - a
+	// `CreateUpdate` here would send an empty `CreateUpdateOptions` alongside the migration below
+	if _, err := client.GremlinResourcesGetGremlinDatabase(ctx, *id); err != nil {
+		return fmt.Errorf("retrieving %s: %w", id, err)
 	}
 
 	if common.HasThroughputChange(d) {
+		throughputResp, err := client.GremlinResourcesGetGremlinDatabaseThroughput(ctx, *id)
+		if err != nil && !response.WasNotFound(throughputResp.HttpResponse) {
+			return fmt.Errorf("retrieving Throughput for %s: %+v", id, err)
+		}
+
+		desiredMode := common.DesiredThroughputMode(d)
+		currentMode := common.CurrentThroughputMode(pointer.From(throughputResp.Model))
+		migrated := false
+
+		if common.ThroughputMigrationRequired(currentMode, desiredMode) {
+			switch desiredMode {
+			case common.ThroughputModeAutoscale:
+				if err := client.GremlinResourcesMigrateGremlinDatabaseToAutoscaleThenPoll(ctx, *id); err != nil {
+					return fmt.Errorf("migrating %s to autoscale throughput: %+v", id, err)
+				}
+			case common.ThroughputModeManual:
+				if err := client.GremlinResourcesMigrateGremlinDatabaseToManualThroughputThenPoll(ctx, *id); err != nil {
+					return fmt.Errorf("migrating %s to manual throughput: %+v", id, err)
+				}
+			}
+			migrated = true
+
+			// the migration APIs accept no request body and assign a system-determined value, so the
+			// result has to be read back to determine whether the configured value still needs applying
+			throughputResp, err = client.GremlinResourcesGetGremlinDatabaseThroughput(ctx, *id)
+			if err != nil {
+				return fmt.Errorf("retrieving Throughput for %s: %+v", id, err)
+			}
+
+			if common.ThroughputValueMatchesConfig(d, pointer.From(throughputResp.Model)) {
+				return resourceCosmosGremlinDatabaseRead(d, meta)
+			}
+		}
+
 		if err := client.GremlinResourcesUpdateGremlinDatabaseThroughputThenPoll(ctx, *id, common.ExpandCosmosDBThroughputSettingsUpdateParameters(d)); err != nil {
-			return fmt.Errorf("setting Throughput for %s: %+v - If the collection has not been created with and initial throughput, you cannot configure it later", id, err)
+			if migrated {
+				return fmt.Errorf("setting Throughput for %s after migrating it to %s throughput: %+v", id, desiredMode, err)
+			}
+
+			return fmt.Errorf("setting Throughput for %s: %+v - If the collection has not been created with an initial throughput, you cannot configure it later", id, err)
 		}
 	}
 
@@ -197,7 +225,7 @@ func resourceCosmosGremlinDatabaseRead(d *pluginsdk.ResourceData, meta interface
 				d.Set("autoscale_settings", nil)
 			}
 		} else {
-			common.SetResourceDataThroughputFromResponse(*throughputResp.Model, d)
+			common.SetResourceDataThroughputFromResponse(pointer.From(throughputResp.Model), d)
 		}
 	}
 
