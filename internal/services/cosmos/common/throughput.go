@@ -4,8 +4,6 @@
 package common
 
 import (
-	"fmt"
-
 	"github.com/hashicorp/go-azure-helpers/lang/pointer"
 	"github.com/hashicorp/go-azure-sdk/resource-manager/cosmosdb/2024-08-15/cosmosdb"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/tf/pluginsdk"
@@ -53,14 +51,6 @@ func SetResourceDataThroughputFromResponse(throughputResponse cosmosdb.Throughpu
 	d.Set("throughput", GetThroughputFromResult(throughputResponse))
 
 	d.Set("autoscale_settings", FlattenCosmosDbAutoscaleSettings(throughputResponse))
-}
-
-func CheckForChangeFromAutoscaleAndManualThroughput(d *pluginsdk.ResourceData) error {
-	if d.HasChange("throughput") && d.HasChange("autoscale_settings") {
-		return fmt.Errorf("switching between autoscale and manually provisioned throughput via Terraform is not supported at this time")
-	}
-
-	return nil
 }
 
 func HasThroughputChange(d *pluginsdk.ResourceData) bool {
