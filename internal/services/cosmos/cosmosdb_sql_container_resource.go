@@ -249,10 +249,6 @@ func resourceCosmosDbSQLContainerUpdate(d *pluginsdk.ResourceData, meta interfac
 		return err
 	}
 
-	if err = common.CheckForChangeFromAutoscaleAndManualThroughput(d); err != nil {
-		return fmt.Errorf("checking `autoscale_settings` and `throughput` for %s: %w", id, err)
-	}
-
 	indexingPolicy := common.ExpandAzureRmCosmosDbIndexingPolicy(d)
 	if err := common.ValidateAzureRmCosmosDbIndexingPolicy(indexingPolicy); err != nil {
 		return fmt.Errorf("validating `indexing_policy`: %w", err)
@@ -299,7 +295,45 @@ func resourceCosmosDbSQLContainerUpdate(d *pluginsdk.ResourceData, meta interfac
 	}
 
 	if common.HasThroughputChange(d) {
+		throughputResp, err := client.SqlResourcesGetSqlContainerThroughput(ctx, *id)
+		if err != nil && !response.WasNotFound(throughputResp.HttpResponse) {
+			return fmt.Errorf("retrieving Throughput for %s: %+v", id, err)
+		}
+
+		desiredMode := common.DesiredThroughputMode(d)
+		currentMode := common.CurrentThroughputMode(pointer.From(throughputResp.Model))
+		migrated := false
+
+		if common.ThroughputMigrationRequired(currentMode, desiredMode) {
+			switch desiredMode {
+			case common.ThroughputModeAutoscale:
+				if err := client.SqlResourcesMigrateSqlContainerToAutoscaleThenPoll(ctx, *id); err != nil {
+					return fmt.Errorf("migrating %s to autoscale throughput: %+v", id, err)
+				}
+			case common.ThroughputModeManual:
+				if err := client.SqlResourcesMigrateSqlContainerToManualThroughputThenPoll(ctx, *id); err != nil {
+					return fmt.Errorf("migrating %s to manual throughput: %+v", id, err)
+				}
+			}
+			migrated = true
+
+			// the migration APIs accept no request body and assign a system-determined value, so the
+			// result has to be read back to determine whether the configured value still needs applying
+			throughputResp, err = client.SqlResourcesGetSqlContainerThroughput(ctx, *id)
+			if err != nil {
+				return fmt.Errorf("retrieving Throughput for %s: %+v", id, err)
+			}
+
+			if common.ThroughputValueMatchesConfig(d, pointer.From(throughputResp.Model)) {
+				return resourceCosmosDbSQLContainerRead(d, meta)
+			}
+		}
+
 		if err := client.SqlResourcesUpdateSqlContainerThroughputThenPoll(ctx, *id, common.ExpandCosmosDBThroughputSettingsUpdateParameters(d)); err != nil {
+			if migrated {
+				return fmt.Errorf("setting Throughput for %s after migrating it to %s throughput: %+v", id, desiredMode, err)
+			}
+
 			return fmt.Errorf("setting Throughput for %s: %+v - If the collection has not been created with an initial throughput, you cannot configure it later", id, err)
 		}
 	}
