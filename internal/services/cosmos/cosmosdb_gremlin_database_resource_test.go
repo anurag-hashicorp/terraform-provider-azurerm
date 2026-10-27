@@ -107,6 +107,54 @@ func TestAccCosmosGremlinDatabase_autoscale(t *testing.T) {
 	})
 }
 
+func TestAccCosmosGremlinDatabase_switchManualToAutoscale(t *testing.T) {
+	data := acceptance.BuildTestData(t, "azurerm_cosmosdb_gremlin_database", "test")
+	r := CosmosGremlinDatabaseResource{}
+
+	data.ResourceTest(t, r, []acceptance.TestStep{
+		{
+			Config: r.complete(data, 1000),
+			Check: acceptance.ComposeAggregateTestCheckFunc(
+				check.That(data.ResourceName).ExistsInAzure(r),
+				check.That(data.ResourceName).Key("throughput").HasValue("1000"),
+			),
+		},
+		data.ImportStep(),
+		{
+			Config: r.autoscale(data, 4000),
+			Check: acceptance.ComposeAggregateTestCheckFunc(
+				check.That(data.ResourceName).ExistsInAzure(r),
+				check.That(data.ResourceName).Key("autoscale_settings.0.max_throughput").HasValue("4000"),
+			),
+		},
+		data.ImportStep(),
+	})
+}
+
+func TestAccCosmosGremlinDatabase_switchAutoscaleToManual(t *testing.T) {
+	data := acceptance.BuildTestData(t, "azurerm_cosmosdb_gremlin_database", "test")
+	r := CosmosGremlinDatabaseResource{}
+
+	data.ResourceTest(t, r, []acceptance.TestStep{
+		{
+			Config: r.autoscale(data, 4000),
+			Check: acceptance.ComposeAggregateTestCheckFunc(
+				check.That(data.ResourceName).ExistsInAzure(r),
+				check.That(data.ResourceName).Key("autoscale_settings.0.max_throughput").HasValue("4000"),
+			),
+		},
+		data.ImportStep(),
+		{
+			Config: r.complete(data, 1000),
+			Check: acceptance.ComposeAggregateTestCheckFunc(
+				check.That(data.ResourceName).ExistsInAzure(r),
+				check.That(data.ResourceName).Key("throughput").HasValue("1000"),
+			),
+		},
+		data.ImportStep(),
+	})
+}
+
 func TestAccCosmosGremlinDatabase_serverless(t *testing.T) {
 	data := acceptance.BuildTestData(t, "azurerm_cosmosdb_gremlin_database", "test")
 	r := CosmosGremlinDatabaseResource{}
